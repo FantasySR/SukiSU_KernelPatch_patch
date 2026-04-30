@@ -186,6 +186,7 @@ jobs:
       env:
         ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
       run: |
+        export TARGET_COMPILE="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/"
         cd demo-netlink
         make CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang"
         ls -la *.kpm
