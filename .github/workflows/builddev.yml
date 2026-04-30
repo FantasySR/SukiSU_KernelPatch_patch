@@ -66,7 +66,6 @@ jobs:
           -DANDROID_PLATFORM=android-33 \
           -DANDROID_ABI=arm64-v8a ../..
         cmake --build .
-        # 重命名Android版本的可执行文件
         if [ -f kptools ]; then
           mv kptools kptools-android
         fi
@@ -77,7 +76,6 @@ jobs:
         mkdir -p build/linux && cd build/linux
         cmake ../..
         make
-        # 重命名Linux版本的可执行文件
         if [ -f kptools ]; then
           mv kptools kptools-linux
         fi
@@ -92,28 +90,24 @@ jobs:
       run: |
         mkdir -p patch/res
 
-        # 复制Android版本的可执行文件
         if [ -f tools/build/android/kptools-android ]; then
           cp -f tools/build/android/kptools-android patch/res/
         else
           echo "Warning: tools/build/android/kptools-android not found!"
         fi
         
-        # 复制Linux版本的可执行文件
         if [ -f tools/build/linux/kptools-linux ]; then
           cp -f tools/build/linux/kptools-linux patch/res/
         else
           echo "Warning: tools/build/linux/kptools-linux not found!"
         fi
         
-        # 复制内核映像
         if [ -f kernel/kpimg ]; then
           cp -f kernel/kpimg patch/res/
         else
           echo "Warning: kernel/kpimg not found!"
         fi
 
-        # 编译加密工具并加密kpimg
         cd patch
         if [ -f encrypt.cpp ]; then
           g++ -o encrypt encrypt.cpp -O3 -std=c++17 -lz || echo "encrypt compile failed"
@@ -124,7 +118,6 @@ jobs:
           fi
         fi
 
-        # 生成头文件（如果文件存在）
         mkdir -p include
         
         if [ -f res/kpimg.enc ]; then
@@ -153,11 +146,9 @@ jobs:
           -DANDROID_STL=c++_static
         cmake --build .
         
-        # 检查构建结果
         echo "Checking build results in build-android directory:"
         ls -la
         
-        # 查找可执行文件并复制
         if [ -f patch_android ]; then
           echo "Found patch_android, copying..."
           cp -f patch_android ../../patch_android
@@ -166,7 +157,6 @@ jobs:
           cp -f patch ../../patch_android
         else
           echo "Error: No patch executable found!"
-          echo "Trying to find any executable..."
           find . -type f -executable -name "*" -exec ls -la {} \;
         fi
 
@@ -176,11 +166,9 @@ jobs:
         mkdir -p build-linux && cd build-linux
         cmake .. && make
         
-        # 检查构建结果
         echo "Checking build results in build-linux directory:"
         ls -la
         
-        # 重命名Linux版本的补丁程序
         if [ -f patch_linux ]; then
           echo "Found patch_linux, copying..."
           cp -f patch_linux ../../patch_linux
@@ -190,19 +178,20 @@ jobs:
           cp -f patch_linux ../../patch_linux 2>/dev/null || true
         else
           echo "Error: No patch executable found!"
-          echo "Trying to find any executable..."
           find . -type f -executable -name "*" -exec ls -la {} \;
         fi
 
-- name: Build KPM modules (demo-netlink)
-  working-directory: ./kpms
-  env:
-    ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
-  run: |
-    export TARGET_COMPILE="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang"
-    cd demo-netlink
-    make
-    ls -la *.kpm
+    # -------------------- 新增步骤：编译 KPM 模块 --------------------
+    - name: Build KPM modules (demo-netlink)
+      working-directory: ./kpms
+      env:
+        ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+      run: |
+        export TARGET_COMPILE="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang"
+        cd demo-netlink
+        make
+        ls -la *.kpm
+    # ------------------------------------------------------------------
 
     - name: Check artifacts before upload
       run: |
@@ -213,6 +202,8 @@ jobs:
         ls -la patch/res/ 2>/dev/null || echo "patch/res/ not found"
         echo "Include directory contents:"
         ls -la patch/include/ 2>/dev/null || echo "patch/include/ not found"
+        echo "KPM modules:"
+        ls -la kpms/demo-netlink/netlink.kpm 2>/dev/null || echo "netlink.kpm not found"
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -228,5 +219,6 @@ jobs:
           patch/include/kpimg_enc.h
           patch/include/kptools_android.h
           patch/include/kptools_linux.h
+          kpms/demo-netlink/netlink.kpm
         if-no-files-found: error
         retention-days: 14
