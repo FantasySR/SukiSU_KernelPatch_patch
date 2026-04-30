@@ -1,10 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Netlink Demo for SukiSU KernelPatch (安全发送版)
- * 策略：通过 CTL0 传入目标 PID，内核主动发送一条消息，
- *       完全不解析 skb，不包含任何外部 Netlink 头文件。
- */
-
 #include <compiler.h>
 #include <kpmodule.h>
 #include <linux/printk.h>
@@ -17,7 +11,17 @@ KPM_LICENSE("GPL v2");
 KPM_AUTHOR("FantasySR");
 KPM_DESCRIPTION("Netlink send test (pid via CTL0)");
 
-/* ========== 手动拼凑最小必要定义 ========== */
+/* ---- 手动补充缺失的 errno ---- */
+#ifndef EINVAL
+#define EINVAL 22
+#endif
+#ifndef ENOMEM
+#define ENOMEM 12
+#endif
+#ifndef EIO
+#define EIO   5
+#endif
+
 #define NETLINK_TEST 31
 #define GFP_ATOMIC 0x20U
 
@@ -28,7 +32,6 @@ struct nlmsghdr {
     __u32 nlmsg_seq;
     __u32 nlmsg_pid;
 };
-
 #define NLMSG_ALIGNTO    4
 #define NLMSG_ALIGN(len) (((len) + NLMSG_ALIGNTO - 1) & ~(NLMSG_ALIGNTO - 1))
 #define NLMSG_HDRLEN     ((int)NLMSG_ALIGN(sizeof(struct nlmsghdr)))
@@ -37,19 +40,17 @@ struct nlmsghdr {
 #define NLMSG_DATA(nlh)   ((void *)(((char *)(nlh)) + NLMSG_LENGTH(0)))
 #define NLMSG_DONE 3
 
-/* ---- 精简的 netlink_kernel_cfg （不需要 input 回调）---- */
 struct netlink_kernel_cfg {
-    void (*input)(struct sk_buff *);
+    void (*input)(void *);   // 用 void* 绕过 sk_buff 前向声明问题
 };
 
-/* ---- 动态获取的函数指针 ---- */
-typedef struct sock *(*nl_create_t)(struct net *, int, struct netlink_kernel_cfg *);
-typedef void (*nl_release_t)(struct sock *);
-typedef struct sk_buff *(*alloc_skb_t)(unsigned int, gfp_t);
-typedef void (*kfree_skb_t)(struct sk_buff *);
-typedef int (*nl_unicast_t)(struct sock *, struct sk_buff *, u32);
-typedef struct nlmsghdr *(*nl_put_t)(struct sk_buff *, u32, u32, int, int, int);
-typedef void (*nl_end_t)(struct sk_buff *, struct nlmsghdr *);
+typedef void *(*nl_create_t)(void *, int, struct netlink_kernel_cfg *);
+typedef void (*nl_release_t)(void *);
+typedef void *(*alloc_skb_t)(unsigned int, gfp_t);
+typedef void (*kfree_skb_t)(void *);
+typedef int (*nl_unicast_t)(void *, void *, u32);
+typedef void *(*nl_put_t)(void *, u32, u32, int, int, int);
+typedef void (*nl_end_t)(void *, void *);
 
 static nl_create_t netlink_kernel_create_ptr = NULL;
 static nl_release_t netlink_kernel_release_ptr = NULL;
@@ -59,10 +60,9 @@ static nl_unicast_t nlmsg_unicast_ptr = NULL;
 static nl_put_t nlmsg_put_ptr = NULL;
 static nl_end_t nlmsg_end_ptr = NULL;
 
-static struct sock *nl_sk = NULL;
-static struct net *init_net_ptr = NULL;   /* 用于存放 init_net 的地址 */
+static void *nl_sk = NULL;
+static void *init_net_ptr = NULL;
 
-/* ---- 辅助：通过 CTL0 获取目标 PID，发送消息 ---- */
 static long netlink_control0(const char *args, char *__user out_msg, int outlen)
 {
     if (!args || !nl_sk) {
@@ -78,9 +78,8 @@ static long netlink_control0(const char *args, char *__user out_msg, int outlen)
         return -EINVAL;
     }
 
-    /* 构造一条 "hello" 消息并发送给用户态 */
-    struct sk_buff *skb;
-    struct nlmsghdr *nlh;
+    void *skb;
+    void *nlh;
     const char *msg = "Hello from SukiSU Kernel!";
     int size = NLMSG_SPACE(32);
 
@@ -113,10 +112,8 @@ static long netlink_control0(const char *args, char *__user out_msg, int outlen)
 
 static long init(const char *args, const char *event, void *__user reserved)
 {
-    /* 动态获取 init_net 地址 */
-    init_net_ptr = (struct net *)kallsyms_lookup_name("init_net");
+    init_net_ptr = (void *)kallsyms_lookup_name("init_net");
 
-    /* 动态获取所有 Netlink 函数 */
     netlink_kernel_create_ptr = (nl_create_t)kallsyms_lookup_name("netlink_kernel_create");
     netlink_kernel_release_ptr = (nl_release_t)kallsyms_lookup_name("netlink_kernel_release");
     alloc_skb_ptr = (alloc_skb_t)kallsyms_lookup_name("alloc_skb");
@@ -132,9 +129,7 @@ static long init(const char *args, const char *event, void *__user reserved)
         return -1;
     }
 
-    struct netlink_kernel_cfg cfg = {
-        .input = NULL,   /* 我们不接收任何消息 */
-    };
+    struct netlink_kernel_cfg cfg = { .input = NULL };
     nl_sk = netlink_kernel_create_ptr(init_net_ptr, NETLINK_TEST, &cfg);
     if (!nl_sk) {
         printk(KERN_ERR "NL_DEMO: netlink_kernel_create failed\n");
@@ -147,10 +142,7 @@ static long init(const char *args, const char *event, void *__user reserved)
 
 static long exit(void *__user reserved)
 {
-    if (nl_sk) {
-        netlink_kernel_release_ptr(nl_sk);
-        nl_sk = NULL;
-    }
+    if (nl_sk) { netlink_kernel_release_ptr(nl_sk); nl_sk = NULL; }
     printk(KERN_INFO "NL_DEMO: unloaded\n");
     return 0;
 }
