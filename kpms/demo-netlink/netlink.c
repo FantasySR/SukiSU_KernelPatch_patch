@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Netlink Demo for SukiSU KernelPatch (自包含版)
- * 完全不依赖 linux/netlink.h 等外部头文件
+ * Netlink Demo for SukiSU KernelPatch (安全发送版)
+ * 策略：通过 CTL0 传入目标 PID，内核主动发送一条消息，
+ *       完全不解析 skb，不包含任何外部 Netlink 头文件。
  */
 
 #include <compiler.h>
@@ -10,20 +11,22 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 
-/* ========== 手动定义 Netlink 所需的所有结构体和常量 ========== */
+KPM_NAME("NetlinkDemo");
+KPM_VERSION("1.0.0");
+KPM_LICENSE("GPL v2");
+KPM_AUTHOR("FantasySR");
+KPM_DESCRIPTION("Netlink send test (pid via CTL0)");
 
+/* ========== 手动拼凑最小必要定义 ========== */
 #define NETLINK_TEST 31
+#define GFP_ATOMIC 0x20U
 
-/* 网络命名空间 (仅前向声明) */
-struct net;
-
-/* Netlink 消息头 (标准定义) */
 struct nlmsghdr {
-    __u32   nlmsg_len;      /* 消息总长度 (含头部) */
-    __u16   nlmsg_type;     /* 消息类型 */
-    __u16   nlmsg_flags;    /* 附加标志 */
-    __u32   nlmsg_seq;      /* 序列号 */
-    __u32   nlmsg_pid;      /* 发送者端口ID */
+    __u32 nlmsg_len;
+    __u16 nlmsg_type;
+    __u16 nlmsg_flags;
+    __u32 nlmsg_seq;
+    __u32 nlmsg_pid;
 };
 
 #define NLMSG_ALIGNTO    4
@@ -32,21 +35,14 @@ struct nlmsghdr {
 #define NLMSG_LENGTH(len) ((len) + NLMSG_ALIGN(NLMSG_HDRLEN))
 #define NLMSG_SPACE(len)  NLMSG_ALIGN(NLMSG_LENGTH(len))
 #define NLMSG_DATA(nlh)   ((void *)(((char *)(nlh)) + NLMSG_LENGTH(0)))
-#define NLMSG_OK(nlh, len) ((len) >= (int)sizeof(struct nlmsghdr) && \
-                             (nlh)->nlmsg_len >= sizeof(struct nlmsghdr) && \
-                             (int)(nlh)->nlmsg_len <= (len))
 #define NLMSG_DONE 3
 
-/* Netlink 内核配置 (简化版) */
+/* ---- 精简的 netlink_kernel_cfg （不需要 input 回调）---- */
 struct netlink_kernel_cfg {
-    void (*input)(struct sk_buff *skb);
+    void (*input)(struct sk_buff *);
 };
 
-/* 套接字缓冲区 (仅前向声明足以) */
-struct sk_buff;
-struct sock;
-
-/* ========== 动态获取的函数指针 ========== */
+/* ---- 动态获取的函数指针 ---- */
 typedef struct sock *(*nl_create_t)(struct net *, int, struct netlink_kernel_cfg *);
 typedef void (*nl_release_t)(struct sock *);
 typedef struct sk_buff *(*alloc_skb_t)(unsigned int, gfp_t);
@@ -64,56 +60,61 @@ static nl_put_t nlmsg_put_ptr = NULL;
 static nl_end_t nlmsg_end_ptr = NULL;
 
 static struct sock *nl_sk = NULL;
+static struct net *init_net_ptr = NULL;   /* 用于存放 init_net 的地址 */
 
-KPM_NAME("NetlinkDemo");
-KPM_VERSION("1.0.0");
-KPM_LICENSE("GPL v2");
-KPM_AUTHOR("FantasySR");
-KPM_DESCRIPTION("Netlink communication test (self-contained)");
-
-/* ---- 收到用户态消息的回调 ---- */
-static void nl_recv_msg(struct sk_buff *skb)
+/* ---- 辅助：通过 CTL0 获取目标 PID，发送消息 ---- */
+static long netlink_control0(const char *args, char *__user out_msg, int outlen)
 {
+    if (!args || !nl_sk) {
+        if (out_msg && outlen > 0) strncpy(out_msg, "not ready", outlen);
+        return 0;
+    }
+
+    int target_pid = 0;
+    const char *p = args;
+    while (*p >= '0' && *p <= '9') target_pid = target_pid * 10 + (*p++ - '0');
+    if (*p != '\0' || target_pid <= 0) {
+        if (out_msg && outlen > 0) strncpy(out_msg, "err:bad pid", outlen);
+        return -EINVAL;
+    }
+
+    /* 构造一条 "hello" 消息并发送给用户态 */
+    struct sk_buff *skb;
     struct nlmsghdr *nlh;
-    char *msg;
-    int msg_len;
-    struct sk_buff *reply_skb;
-    struct nlmsghdr *reply_nlh;
-    const char *reply_msg = "Hello from SukiSU Kernel!";
-    int reply_size;
+    const char *msg = "Hello from SukiSU Kernel!";
+    int size = NLMSG_SPACE(32);
 
-    nlh = (struct nlmsghdr *)skb->data;
-    msg = (char *)NLMSG_DATA(nlh);
-    msg_len = nlh->nlmsg_len - NLMSG_HDRLEN;
-
-    printk(KERN_INFO "NL_DEMO: received %.*s\n", msg_len, msg);
-
-    /* 构造回复 */
-    reply_size = NLMSG_SPACE(32);
-    reply_skb = alloc_skb_ptr(reply_size, GFP_ATOMIC);
-    if (!reply_skb) {
+    skb = alloc_skb_ptr(size, GFP_ATOMIC);
+    if (!skb) {
         printk(KERN_ERR "NL_DEMO: alloc_skb failed\n");
-        return;
+        if (out_msg && outlen > 0) strncpy(out_msg, "err:alloc", outlen);
+        return -ENOMEM;
     }
 
-    reply_nlh = nlmsg_put_ptr(reply_skb, nlh->nlmsg_pid, 0, NLMSG_DONE, 32, 0);
-    if (!reply_nlh) {
-        kfree_skb_ptr(reply_skb);
-        return;
+    nlh = nlmsg_put_ptr(skb, 0, 0, NLMSG_DONE, 32, 0);
+    if (!nlh) {
+        kfree_skb_ptr(skb);
+        if (out_msg && outlen > 0) strncpy(out_msg, "err:put", outlen);
+        return -ENOMEM;
     }
-    memcpy(NLMSG_DATA(reply_nlh), reply_msg, strlen(reply_msg) + 1);
-    nlmsg_end_ptr(reply_skb, reply_nlh);
+    memcpy(NLMSG_DATA(nlh), msg, strlen(msg) + 1);
+    nlmsg_end_ptr(skb, nlh);
 
-    if (nlmsg_unicast_ptr(nl_sk, reply_skb, nlh->nlmsg_pid) < 0) {
-        printk(KERN_ERR "NL_DEMO: nlmsg_unicast failed\n");
+    if (nlmsg_unicast_ptr(nl_sk, skb, target_pid) < 0) {
+        printk(KERN_ERR "NL_DEMO: nlmsg_unicast to pid %d failed\n", target_pid);
+        if (out_msg && outlen > 0) strncpy(out_msg, "err:send", outlen);
+        return -EIO;
     }
+
+    printk(KERN_INFO "NL_DEMO: sent message to pid %d\n", target_pid);
+    if (out_msg && outlen > 0) strncpy(out_msg, "ok", outlen);
+    return 0;
 }
 
 static long init(const char *args, const char *event, void *__user reserved)
 {
-    struct netlink_kernel_cfg cfg = {
-        .input = nl_recv_msg,
-    };
+    /* 动态获取 init_net 地址 */
+    init_net_ptr = (struct net *)kallsyms_lookup_name("init_net");
 
     /* 动态获取所有 Netlink 函数 */
     netlink_kernel_create_ptr = (nl_create_t)kallsyms_lookup_name("netlink_kernel_create");
@@ -131,7 +132,10 @@ static long init(const char *args, const char *event, void *__user reserved)
         return -1;
     }
 
-    nl_sk = netlink_kernel_create_ptr(&init_net, NETLINK_TEST, &cfg);
+    struct netlink_kernel_cfg cfg = {
+        .input = NULL,   /* 我们不接收任何消息 */
+    };
+    nl_sk = netlink_kernel_create_ptr(init_net_ptr, NETLINK_TEST, &cfg);
     if (!nl_sk) {
         printk(KERN_ERR "NL_DEMO: netlink_kernel_create failed\n");
         return -1;
@@ -153,3 +157,4 @@ static long exit(void *__user reserved)
 
 KPM_INIT(init);
 KPM_EXIT(exit);
+KPM_CTL0(netlink_control0);
