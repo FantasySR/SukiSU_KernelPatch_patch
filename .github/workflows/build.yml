@@ -56,6 +56,10 @@ jobs:
           make
           mv inlinehook.kpm demo-inlinehook.kpm
 
+          cd ../demo-netlink
+          make
+          mv netlink.kpm demo-netlink.kpm
+
           cd ../demo-syscallhook
           make
           mv syscallhook.kpm demo-syscallhook.kpm
@@ -78,6 +82,7 @@ jobs:
             kernel/kpimg-android
             kpms/demo-hello/demo-hello.kpm
             kpms/demo-inlinehook/demo-inlinehook.kpm
+            kpms/demo-netlink/demo-netlink.kpm
             kpms/demo-syscallhook/demo-syscallhook.kpm
           generateReleaseNotes: true
           allowUpdates: true
