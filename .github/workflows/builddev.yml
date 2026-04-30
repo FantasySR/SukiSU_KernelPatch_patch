@@ -182,15 +182,14 @@ jobs:
         fi
 
     # -------------------- 新增步骤：编译 KPM 模块 --------------------
-    - name: Build KPM modules (demo-netlink)
-      working-directory: ./kpms
-      env:
-        ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
-      run: |
-        export TARGET_COMPILE="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang"
-        cd demo-netlink
-        make
-        ls -la *.kpm
+- name: Build KPM modules (demo-netlink)
+  working-directory: ./kpms
+  env:
+    ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+  run: |
+    cd demo-netlink
+    make CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang"
+    ls -la *.kpm
     # ------------------------------------------------------------------
 
     - name: Check artifacts before upload
