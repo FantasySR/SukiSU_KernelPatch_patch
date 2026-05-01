@@ -11,8 +11,8 @@ KPM_DESCRIPTION("Minimal kallsyms test");
 
 static long init(const char *args, const char *event, void *__user reserved)
 {
-    void *printk_addr = kallsyms_lookup_name("printk");
-    printk(KERN_INFO "NL_DEMO: printk address = %px\n", printk_addr);
+    unsigned long printk_addr = kallsyms_lookup_name("printk");
+    printk(KERN_INFO "NL_DEMO: printk address = %lx\n", printk_addr);
     if (printk_addr) {
         printk(KERN_INFO "NL_DEMO: kallsyms_lookup_name works!\n");
     } else {
